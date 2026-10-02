@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Quantum Survey Voxel GIS - ช่างเบิร์ดโคตรเฟี้ยว</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #050505; color: #00ffcc; font-family: 'Courier New', monospace; }
+        #view-container { position: relative; width: 100%; height: 100%; }
+        
+        /* 2D Self-Contained Canvas Viewport (แก้ปัญหา Viewport ดำมืด ไม่ต้องง้อ Google Maps API Key) */
+        #map-canvas-2d { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; cursor: grab; transition: opacity 0.6s ease; }
+        #map-canvas-2d:active { cursor: grabbing; }
+
+        /* 3D Quantum Voxel Canvas */
+        #webgl-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; opacity: 0; transition: opacity 0.6s ease; }
+        
+        .active-3d #webgl-canvas { opacity: 1; pointer-events: auto; }
+        .active-3d #map-canvas-2d { opacity: 0; pointer-events: none; }
+        
+        #hud { position: absolute; top: 20px; left: 20px; z-index: 10; background: rgba(5, 5, 5, 0.85); padding: 15px; border: 1px solid #00ffcc; border-radius: 4px; backdrop-filter: blur(5px); }
+        h1 { font-size: 1rem; margin: 0 0 8px 0; color: #ff5555; letter-spacing: 1px; }
+        p { font-size: 0.8rem; margin: 4px 0; color: #888; }
+        .highlight { color: #00ffcc; }
+        
+        .control-group { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+        input { background: #111; border: 1px solid #444; color: #fff; padding: 6px; font-family: monospace; width: 110px; border-radius: 3px; }
+        button { background: #00ffcc; color: #050505; border: none; padding: 6px 12px; font-weight: bold; cursor: pointer; border-radius: 3px; font-family: monospace; transition: 0.2s; }
+        button:hover { background: #ff5555; color: #fff; }
+    </style>
+</head>
+<body>
+    <div id="view-container">
+        <!-- 2D Viewport Canvas -->
+        <canvas id="map-canvas-2d"></canvas>
+        <!-- 3D Quantum Voxel Canvas -->
+        <canvas id="webgl-canvas"></canvas>
+        
+        <div id="hud">
+            <h1>[ โควตา: ปฐวีธาตุ Voxel GIS ]</h1>
+            <p>Lat/Long: <span id="coords" class="highlight">18.7883, 98.9853 (เชียงใหม่)</span></p>
+            <p>Frustum Culling: <span class="highlight">ACTIVE (สุญญตา)</span></p>
+            <p>FPS: <span id="fps" class="highlight">60</span> | Mode: <span id="mode-text" class="highlight">2D MAP</span></p>
+            <div class="control-group">
+                <input type="text" id="lat-input" value="18.7883" placeholder="Lat">
+                <input type="text" id="lng-input" value="98.9853" placeholder="Lng">
+                <button id="transfer-btn">⚡ 3D TRANSITION</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Raw WebGL & Three.js CDN (เบาสลิว Zero-Payload) -->
+    <script type="module">
+        import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.module.js';
+
+        // --- 1. 2D Interactive Grid Viewport (Self-Contained) ---
+        const mapCanvas = document.getElementById('map-canvas-2d');
+        const ctx2d = mapCanvas.getContext('2d');
+        let mapX = 0, mapY = 0, isDragging = false, startX, startY;
+        let lat = 18.7883, lng = 98.9853;
+        let active3D = false;
+
+        function resize2D() {
+            mapCanvas.width = window.innerWidth;
+            mapCanvas.height = window.innerHeight;
+            draw2DMap();
+        }
+
+        function draw2DMap() {
+            ctx2d.fillStyle = '#111315';
+            ctx2d.fillRect(0, 0, mapCanvas.width, mapCanvas.height);
+
+            // วาดตารางจำลองพิกัด (Grid / ปฐวีธาตุ 2D)
+            const gridSize = 60;
+            ctx2d.strokeStyle = '#222831';
+            ctx2d.lineWidth = 1;
+
+            const offsetX = mapX % gridSize;
+            const offsetY = mapY % gridSize;
+
+            for (let x = offsetX; x < mapCanvas.width; x += gridSize) {
+                ctx2d.beginPath(); ctx2d.moveTo(x, 0); ctx2d.lineTo(x, mapCanvas.height); ctx2d.stroke();
+            }
+            for (let y = offsetY; y < mapCanvas.height; y += gridSize) {
+                ctx2d.beginPath(); ctx2d.moveTo(0, y); ctx2d.lineTo(mapCanvas.width, y); ctx2d.stroke();
+            }
+
+            // วาดจุดกึ่งกลาง (Crosshair / หมุดรังวัด)
+            const cx = mapCanvas.width / 2;
+            const cy = mapCanvas.height / 2;
+            ctx2d.strokeStyle = '#ff5555';
+            ctx2d.lineWidth = 2;
+            ctx2d.beginPath();
+            ctx2d.arc(cx, cy, 12, 0, Math.PI * 2);
+            ctx2d.stroke();
+
+            ctx2d.fillStyle = '#00ffcc';
+            ctx2d.font = '12px Courier New';
+            ctx2d.fillText("📍 ช่างเบิร์ดโคตรเฟี้ยว (Center)", cx + 18, cy - 5);
+        }
+
+        mapCanvas.addEventListener('mousedown', (e) => { isDragging = true; startX = e.clientX - mapX; startY = e.clientY - mapY; });
+        window.addEventListener('mousemove', (e) => {
+            if (!isDragging || active3D) return;
+            mapX = e.clientX - startX;
+            mapY = e.clientY - startY;
+            lat = 18.7883 - (mapY * 0.0001);
+            lng = 98.9853 + (mapX * 0.0001);
+            document.getElementById('coords').innerText = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+            document.getElementById('lat-input').value = lat.toFixed(4);
+            document.getElementById('lng-input').value = lng.toFixed(4);
+            draw2DMap();
+        });
+        window.addEventListener('mouseup', () => { isDragging = false; });
+
+        // --- 2. WebGL 3D Quantum Voxel Contour Engine ---
+        const canvas3D = document.getElementById('webgl-canvas');
+        const renderer = new THREE.WebGLRenderer({ canvas: canvas3D, antialias: false, powerPreference: "high-performance" });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 50, 80);
+        camera.lookAt(0, 0, 0);
+
+        // สร้าง Voxel Quantum Cells (Contour ปฐวีธาตุ)
+        const size = 50;
+        const geometry = new THREE.BoxGeometry(0.8, 0.8, 0.8);
+        const material = new THREE.MeshBasicMaterial({ color: 0x00ffcc, wireframe: true });
+        
+        const count = size * size;
+        const voxelMesh = new THREE.InstancedMesh(geometry, material, count);
+        voxelMesh.frustumCulled = true; // สุญญตา: นอกจอทำลายทิ้งทันที
+
+        const dummy = new THREE.Object3D();
+        let idx = 0;
+        for (let x = 0; x < size; x++) {
+            for (let z = 0; z < size; z++) {
+                const px = (x - size / 2) * 1.2;
+                const pz = (z - size / 2) * 1.2;
+                const py = Math.sin(x * 0.15) * Math.cos(z * 0.15) * 6;
+                dummy.position.set(px, py, pz);
+                dummy.updateMatrix();
+                voxelMesh.setMatrixAt(idx++, dummy.matrix);
+            }
+        }
+        scene.add(voxelMesh);
+
+        // --- 3. Animation Loop & FPS ---
+        let lastTime = performance.now();
+        function animate() {
+            requestAnimationFrame(animate);
+            const now = performance.now();
+            document.getElementById('fps').innerText = Math.round(1000 / (now - lastTime));
+            lastTime = now;
+
+            if (active3D) {
+                voxelMesh.rotation.y += 0.005;
+            }
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // --- 4. ⚡ Transition Button (2D <-> 3D) ---
+        const btn = document.getElementById('transfer-btn');
+        const container = document.getElementById('view-container');
+        const modeText = document.getElementById('mode-text');
+
+        btn.addEventListener('click', () => {
+            active3D = !active3D;
+            if (active3D) {
+                container.classList.add('active-3d');
+                btn.innerText = "🗺️ BACK TO 2D MAP";
+                modeText.innerText = "3D QUANTUM VOXEL";
+            } else {
+                container.classList.remove('active-3d');
+                btn.innerText = "⚡ 3D TRANSITION";
+                modeText.innerText = "2D MAP";
+            }
+        });
+
+        window.addEventListener('resize', () => {
+            resize2D();
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        resize2D();
+    </script>
+</body>
+</html>
